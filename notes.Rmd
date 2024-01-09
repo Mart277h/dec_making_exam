@@ -1,0 +1,172 @@
+---
+title: "notes"
+author: "Martine Lind Jensen"
+date: "2023-12-07"
+output: html_document
+---
+```{r}
+pacman::p_load(tidyverse,fs)
+```
+
+```{r}
+data <- read.delim("Data/sub-02/func/sub-02_task-rl_run-01_events.tsv")
+```
+
+Function to clean and collapse data
+```{r}
+col_data <- data %>% mutate(ch_lucr = ifelse(ch_lucr=="n/a", NA, ch_lucr),
+                            ch_inf = ifelse(ch_inf=="n/a", NA, ch_inf), 
+                            rew_flag = ifelse(rew_flag=="n/a", NA, rew_flag), 
+                            ch_lucr = as.numeric(ch_lucr), 
+                            ch_inf = as.numeric(ch_inf), 
+                            rew_flag = as.numeric(rew_flag)) %>% 
+  select(-c(ons, dur, im_name, ev_type)) %>% 
+  na.omit %>% 
+  group_by(trial_num) %>% 
+  summarise_all(mean)
+```
+
+Create function to load all data in one df, keeping subject nr 
+```{r}
+participants <- read.delim("Data/participants.tsv")
+```
+
+```{r}
+read_data <- function(filename) {
+    # getting filenames and subsetting the relevant parts
+    files = path_file(path = filename) 
+    
+    for (file in filename){
+    ID = str_extract(files,"^[^.]+") 
+    }
+    
+    # creating dataframes, loading data
+    df = read_delim(filename)
+    
+    #Cleaning data
+    df <- df %>% mutate(ch_lucr = ifelse(ch_lucr=="n/a", NA, ch_lucr),
+                            ch_inf = ifelse(ch_inf=="n/a", NA, ch_inf), 
+                            rew_flag = ifelse(rew_flag=="n/a", NA, rew_flag), 
+                            ch_lucr = as.numeric(ch_lucr), 
+                            ch_inf = as.numeric(ch_inf), 
+                            rew_flag = as.numeric(rew_flag)) %>% 
+      select(-c(ons, dur, im_name, ev_type)) %>% 
+      na.omit %>% 
+      group_by(trial_num) %>% 
+      summarise_all(mean)
+        
+    df$ID = ID
+    
+    # combine all this data in one dataset
+    return(df)
+}
+
+#Testing it on one file
+test_data = read_data("Data/sub-02/func/sub-02_task-rl_run-02_events.tsv")
+
+#Using it on all files
+df_exex <- list.files(path = 'Data/', pattern = "^sub-\\d+_task-rl_run-\\d+_events\\.tsv$", full.names = TRUE, recursive = TRUE) %>%
+  purrr::map_df(read_data)
+```
+
+```{r}
+#write_csv(df_exex, "df_exex.csv")
+```
+
+```{r}
+df_exex %>% group_by(ID) %>%  filter(trial_num == 1) %>% ggplot(aes(ch_inf, color = ID))+ 
+  geom_histogram()# +
+  #facet_wrap(.~ID)
+
+  #Only 3 does not choose info side on trial 1 
+
+df_exex %>% filter(ID == "sub-01_task-rl_run-01_events") %>% ggplot(aes(trial_num, as.character(ch_inf), color = as.character(rew_flag), shape = as.character(trial_type)))+
+  geom_point() +
+  facet_wrap(.~ID)
+```
+
+```{r}
+#Doing the payoff for data like the. Need their choice x of deck 1 or 2(that is in the choice info?)
+#ch lucr tells us their payoff X (reward)
+data_estimation <- df_exex %>% 
+  mutate(
+    gain = ifelse(rew_flag == 0, -1, rew_flag),
+    deck = ch_inf+1, #ch_inf= 1 = choice of information = 2, if ch_inf = 0, choice no info = 1
+    subID = str_extract(ID, "\\d+"), 
+    subID2 = gsub("\\D", "", ID)
+) #%>% 
+  #select(c(trial_num, gain, deck, subID, subID2, run_num, trial_type))
+
+#write_csv(data_estimation, "data_estamation.csv")
+```
+
+```{r}
+data_estimation %>% ggplot(aes(trial_num, gain*deck))+ 
+  geom_point() +
+  facet_wrap(.~subID2)
+```
+
+```{r}
+df_run1 <- data_estimation %>% filter(run_num == 1)
+```
+
+```{r}
+try_all <- data_estimation %>% mutate(
+  deck1 = NA,
+  deck2 = NA, 
+  deck1 = ifelse(ch_lucr == 1 & rew_flag == 1 & lucr_shape == 1, 1, NA),
+  deck1 = ifelse(ch_lucr == 1 & rew_flag == 0 & lucr_shape == 1, -1, deck1), 
+  deck1 = ifelse(ch_lucr == 0 & rew_flag == 1 & lucr_shape == 1, -1, deck1),
+  deck1 = ifelse(ch_lucr == 0 & rew_flag == 0 & lucr_shape == 1, 1, deck1), 
+  deck1 = ifelse(ch_lucr == 1 & rew_flag == 1 & lucr_shape == 2, -1, deck1), 
+  deck1 = ifelse(ch_lucr == 1 & rew_flag == 0 & lucr_shape == 2, 1, deck1), 
+  deck1 = ifelse(ch_lucr == 0 & rew_flag == 1 & lucr_shape == 2, 1, deck1),
+  deck1 = ifelse(ch_lucr == 0 & rew_flag == 0 & lucr_shape == 2, -1, deck1), 
+  deck2 = ifelse(deck1 == 1, -1, 1)
+) 
+
+try_all2 <- try_all %>% mutate(
+  deck1 = ifelse(ch_lucr == 1 & ch_inf == 1 & lucr_shape == 1, deck1*2, deck1), 
+  deck2 = ifelse(ch_lucr == 1 & ch_inf == 0 & lucr_shape == 1, deck2*2, deck2), 
+  deck1 = ifelse(ch_lucr == 0 & ch_inf == 0 & lucr_shape == 1, deck1*2, deck1),
+  deck2 = ifelse(ch_lucr == 0 & ch_inf == 1 & lucr_shape == 1, deck2*2, deck2), 
+  deck1 = ifelse(ch_lucr == 0 & ch_inf == 1 & lucr_shape == 2, deck1*2, deck1), 
+  deck1 = ifelse(ch_lucr == 1 & ch_inf == 0 & lucr_shape == 2, deck1*2, deck1), 
+  deck2 = ifelse(ch_lucr == 1 & ch_inf == 1 & lucr_shape == 2, deck2*2, deck2), 
+  deck2 = ifelse(ch_lucr == 0 & ch_inf == 0 & lucr_shape == 2, deck2*2, deck2)
+) %>% mutate(
+  deck = ifelse(ch_lucr == 1 & lucr_shape == 1, 1, deck), 
+  deck = ifelse(ch_lucr == 0 & lucr_shape == 1, 2, deck), 
+  deck = ifelse(ch_lucr == 1 & lucr_shape == 2, 2, deck), 
+  deck = ifelse(ch_lucr == 0 & lucr_shape == 2, 1, deck)
+) %>% mutate(
+  gain = ifelse(deck == 1, deck1, gain), 
+  gain = ifelse(deck == 2, deck2, gain)
+) 
+
+payoff1 <- try_all2 %>% select(c(subID2, deck1, deck2, trial_num))
+
+#write_csv(complete_payoff_dataframe, "payoff1.csv")
+data_estimation <- try_all2 %>% select(c(trial_num, subID, subID2, gain, deck))
+#write_csv(complete_estimation_dataframe, "data_estimation.csv")
+```
+
+```{r}
+library(tidyr)
+
+# Assuming your dataframe has columns 'subject' and 'trial_number'
+# Adjust these column names based on your actual dataframe structure
+
+# Create a complete set of all combinations of subjects and trial numbers
+complete_data <- expand.grid(
+  subID2 = unique(payoff1$subID2),
+  trial_num = 1:80
+)
+
+# Merge the complete set with your original dataframe to fill in missing values with NA
+complete_payoff_dataframe <- merge(complete_data, payoff1, by = c("subID2", "trial_num"), all.x = TRUE)
+
+complete_estimation_dataframe <- merge(complete_data, data_estimation, by = c("subID2", "trial_num"), all.x = TRUE)
+
+```
+
