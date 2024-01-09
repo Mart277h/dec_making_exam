@@ -1,0 +1,92 @@
+model {
+
+  mu_a_rew ~ dnorm(0,1)T(0,1)
+  mu_a_pun ~ dnorm(0,1)T(0,1)
+  mu_K ~ dnorm(0,1)T(0,)
+  mu_theta <- 1 #dnorm(0,1)T(0,)
+  mu_omega_f ~ dnorm(0,.1)
+  mu_omega_p ~ dnorm(0,.1)
+
+  lambda_a_rew ~ dgamma(.01,.01)
+  lambda_a_pun ~ dgamma(.01,.01)
+  lambda_K ~ dgamma(.01,.01)
+  #lambda_theta ~ dgamma(.01,.01)
+  lambda_omega_f ~ dgamma(.01,.01)
+  lambda_omega_p ~ dgamma(.01,.01)
+  
+  # more informed priors (that hopefully fit the SD used in the simulation a bit better)
+  #lambda_a_rew ~ dgamma(2.5/2,.01/2)
+  #lambda_a_pun ~ dgamma(2.5/2,.01/2)
+  #lambda_K ~ dgamma(2.5/2,.01/2)
+  #lambda_theta ~ dgamma(2.5/2,.01/2)
+  #lambda_omega_f ~ dgamma(2.5/2,.01/2)
+  #lambda_omega_p ~ dgamma(2.5/2,.01/2)
+  
+  for (s in 1:nsubs) {
+
+    a_rew[s] ~ dnorm(mu_a_rew,lambda_a_rew)
+    a_pun[s] ~ dnorm(mu_a_pun,lambda_a_pun)
+    K[s]  ~ dnorm(mu_K,lambda_K)
+    theta[s] <- 1 # dnorm(mu_theta,lambda_theta) # set to 1 in order to simplify model
+    omega_f[s] ~ dnorm(mu_omega_f,lambda_omega_f)
+    omega_p[s] ~ dnorm(mu_omega_p,lambda_omega_p)
+  
+    #------ set t1 model variables --------------------------
+      
+    Ev[s,1,1] <- 0.5
+    Ev[s,1,2] <- 0.5
+      
+    PS[s,1,1] <- 0.5
+    PS[s,1,2] <- 0.5
+
+    p[s,1,1] <- .5
+    p[s,1,2] <- .5
+ 
+
+    for (t in 2:ntrials[s]) {
+      
+      for (d in 1:2) {
+        
+        # -------- Updating expected values ------------------------
+     
+        #Updating when information given
+        Ev_updateinfo_cho[s,t,d] <- ifelse(X[s,t-1]>=0,
+                                         Ev[s,t-1,d] + a_rew[s]*((X[s,t-1]-1) - Ev[s,t-1,d]), 
+                                         Ev[s,t-1,d] + a_pun[s]*((X[s,t-1]+1) - Ev[s,t-1,d])  
+        )
+        
+        Ev_updateinfo[s,t,d] <- ifelse(d==x[s,t-1], Ev_updateinfo_cho[s,t,d], 1-Ev_updateinfo_cho[s,t,d]) 
+        
+        Ev[s,t,d] <- ifelse(abs(X[s,t-1])==2, Ev_updateinfo[s,t,d], Ev[s,t-1,d])
+        #------------------------------------------------------------------
+        
+        PS_prevcho[s,t,d] <- ifelse(abs(X[s,t-1])==2,
+                                  ifelse(X[s,t-1]>=0, PS[s,t-1,d]/(1+K[s]), PS[s,t-1,d]), 
+                                  PS[s,t-1,d])
+        
+        PS_prev_nocho[s,t,d] <- ifelse(abs(X[s,t-1])==2,
+                                     ifelse(X[s,t-1]>=0, 1/(1+K[s]), PS[s,t-1,d]/(1+K[s])), 
+                                     PS[s,t-1,d])
+        
+        PS[s,t,d] <- ifelse(x[s,t-1]==d, PS_prevcho[s,t,d], PS_prev_nocho[s,t,d])
+      }
+      
+      for (d in 1:2) {
+        
+        I[s,t,d] <- ifelse(abs(payoff1[s,t,d])==2, ((1 - abs(Ev[s,t,1] - Ev[s,t,2]))/2), ((-1 - abs(Ev[s,t,1] - Ev[s,t,2]))/2)) 
+        
+        V[s,t,d] <- Ev[s,t,d] + PS[s,t,d]*omega_p[s] + I[s,t,d]*omega_f[s]
+        
+        exp_p[s,t,d] <- exp(theta[s]*V[s,t,d])
+        
+      }
+      
+      for (d in 1:2) {
+        p[s,t,d] <- exp_p[s,t,d]/sum(exp_p[s,t,])
+      }
+        
+      x[s,t] ~ dcat(p[s,t,])
+      
+    }
+  }
+}

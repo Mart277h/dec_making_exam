@@ -1,0 +1,249 @@
+---
+title: "ex_ex_hier_ORL_recovery"
+author: "Martine Lind Jensen"
+date: "2023-12-09"
+output: html_document
+---
+Loading packages
+```{r}
+install.packages("pacman")
+install.packages("tidyverse")
+pacman::p_load(R2jags, parallel, ggpubr, extraDistr, truncnorm)
+
+pacman::p_load(tidyverse)
+```
+
+Setting seed and practicalities 
+```{r}
+set.seed(1983)
+
+# defining a function for calculating the maximum of the posterior density (not exactly the same as the mode)
+MPD <- function(x) {
+  density(x)$x[which(density(x)$y==max(density(x)$y))]
+}
+```
+
+Task environment. In the exploration/exploitation task there are two trial types. There is a choice between a (1) lucrative and informative detrimental and non-informative, (2) detrimental and informative, lucrative and non-informative. And in each trial you have to choose between either in each trial. In run 1 trials where shifted at trial [19, 23, 21, 17] and run 2 [23, 19,17, 21]
+
+##Setting up payoff structure
+```{r}
+# Mimicking data from study, with 80 trials (2 times for each participant 160 trials total), 50% chance for information choice = lucrative choice
+ntrials <- 80  
+
+# Setting up empty array to be filled
+payoff <- array(NA, dim = c(ntrials, 2))
+
+# Rewards for different probabilities
+probabilities <- list(
+  prob1 = rbinom(19, 1, 0.85),
+  prob2 = rbinom(23, 1, 0.85),
+  prob3 = rbinom(21, 1, 0.85),
+  prob4 = rbinom(17, 1, 0.85)
+)
+
+# Initialize the start row for appending
+start_row <- 1
+
+# Loop to fill the payoff array
+for (i in seq_along(probabilities)) {
+  L <- probabilities[[i]] + probabilities[[i]] - 1
+  R <- L * (-1)
+  
+  # Switch L and R for each new probability
+  if (i %% 2 == 0) {
+    temp <- L
+    L <- R
+    R <- temp
+  }
+  
+  # Determine the number of rows for the current probability
+  num_rows <- length(L)
+  
+  # Append values to the payoff array
+  payoff[start_row:(start_row + num_rows - 1), ] <- cbind(L, R)
+  
+  # Update the start row for the next probability
+  start_row <- start_row + num_rows
+}
+
+```
+
+```{r}
+# Initialize an empty array
+info <- array(NA, dim = c(ntrials, 2))
+
+# Loop to fill the array
+for (i in 1:ntrials) {
+  # Allocate "x" or "y" with a 50% chance for each row
+  if (runif(1) <= 0.5) {
+    info[i, ] <- c(2, 1)
+  } else {
+    info[i, ] <- c(1, 2)
+  }
+}
+
+payoff <- payoff*info
+```
+
+
+##Running full parameter recovery
+
+```{r}
+niterations <- 100 # fewer because it takes too long
+nsubs <- 24 
+ntrials_all <- rep(80, 24) # all 24 simulated subs have 80 trials each
+
+# mu
+true_mu_a_rew <- array(NA,c(niterations))
+true_mu_a_pun <- array(NA,c(niterations))
+true_mu_K <- array(NA,c(niterations))
+true_mu_theta <- array(NA,c(niterations))
+true_mu_omega_f <- array(NA,c(niterations))
+true_mu_omega_p <- array(NA,c(niterations))
+
+infer_mu_a_rew <- array(NA,c(niterations))
+infer_mu_a_pun <- array(NA,c(niterations))
+infer_mu_K <- array(NA,c(niterations))
+infer_mu_theta <- array(NA,c(niterations))
+infer_mu_omega_f <- array(NA,c(niterations))
+infer_mu_omega_p <- array(NA,c(niterations))
+
+# sigma (SD for R) / lambda (precision for JAGS)
+true_lambda_a_rew <- array(NA,c(niterations))
+true_lambda_a_pun <- array(NA,c(niterations))
+true_lambda_K <- array(NA,c(niterations))
+true_lambda_theta <- array(NA,c(niterations))
+true_lambda_omega_f <- array(NA,c(niterations))
+true_lambda_omega_p <- array(NA,c(niterations))
+
+infer_lambda_a_rew <- array(NA,c(niterations))
+infer_lambda_a_pun <- array(NA,c(niterations))
+infer_lambda_K <- array(NA,c(niterations))
+infer_lambda_theta <- array(NA,c(niterations))
+infer_lambda_omega_f <- array(NA,c(niterations))
+infer_lambda_omega_p <- array(NA,c(niterations))
+
+start_time = Sys.time()
+for (i in 1:niterations) {
+  ntrials <- ntrials_all
+  
+  # let's see how robust the model is. Does it recover all sorts of values?
+  mu_a_rew <- runif(1,0,1)
+  mu_a_pun <- runif(1,0,1)
+  mu_K <- runif(1,0,2)
+  mu_theta <- runif(1,.2,2) # could also just be a set value (e.g. 1) to simplify the model a bit
+  mu_omega_f <- runif(1,-2,2)
+  mu_omega_p <- runif(1,-2,2)
+  
+  sigma_a_rew <- runif(1,0,0.1)
+  sigma_a_pun <- runif(1,0,0.1)
+  sigma_K <- runif(1,0,0.2)
+  sigma_theta <- runif(1,0,0.2) # if theta is just a set value (e.g. 1), then this isn't relevant anymore
+  sigma_omega_f <- runif(1,0,0.4)
+  sigma_omega_p <- runif(1,0,0.4)
+  
+  # sigma_a_rew <- runif(1,0,.5)
+  # sigma_a_pun <- runif(1,0,.5)
+  # sigma_K <- runif(1,0,.5)
+  # sigma_theta <- runif(1,0,.5)
+  # sigma_omega_f <- runif(1,0,.5)
+  # sigma_omega_p <- runif(1,0,.5)
+  
+  source('exex_hier_ORL_simulation.R')
+  ORL_sims <- hier_ORL_sim(payoff,nsubs,ntrials,mu_a_rew,mu_a_pun,
+                           mu_K,mu_theta,mu_omega_f,mu_omega_p,
+                           sigma_a_rew,sigma_a_pun,sigma_K,sigma_theta,
+                           sigma_omega_f,sigma_omega_p)
+  
+  x <- ORL_sims$x
+  X <- ORL_sims$X
+  
+  # set up jags and run jags model
+  data <- list("x","X","ntrials","nsubs", "payoff") 
+  params<-c("mu_a_rew","mu_a_pun",
+            "mu_K","mu_theta","mu_omega_f","mu_omega_p",
+            "lambda_a_rew","lambda_a_pun","lambda_K","lambda_theta",
+            "lambda_omega_f","lambda_omega_p")
+  samples <- jags.parallel(data, inits=NULL, params,
+                           model.file ="exex_hier_ORL_agent.txt", n.chains=3, 
+                           n.iter=5000, n.burnin=1000, n.thin=1, n.cluster=4)
+  
+  # mu
+  true_mu_a_rew[i] <- mu_a_rew
+  true_mu_a_pun[i] <- mu_a_pun
+  true_mu_K[i] <- mu_K
+  true_mu_theta[i] <- mu_theta
+  true_mu_omega_f[i] <- mu_omega_f
+  true_mu_omega_p[i] <- mu_omega_p
+  
+  # find maximum a posteriori
+  Y <- samples_hier_recovery$BUGSoutput$sims.list
+  infer_mu_a_rew[i] <- MPD(Y$mu_a_rew)
+  infer_mu_a_pun[i] <- MPD(Y$mu_a_pun)
+  infer_mu_K[i] <- MPD(Y$mu_K)
+  infer_mu_theta[i] <- MPD(Y$mu_theta)
+  infer_mu_omega_f[i] <- MPD(Y$mu_omega_f)
+  infer_mu_omega_p[i] <- MPD(Y$mu_omega_p)
+  
+  # lambda
+  true_lambda_a_rew[i] <- sigma_a_rew
+  true_lambda_a_pun[i] <- sigma_a_pun
+  true_lambda_K[i] <- sigma_K
+  true_lambda_theta[i] <- sigma_theta
+  true_lambda_omega_f[i] <- sigma_omega_f
+  true_lambda_omega_p[i] <- sigma_omega_p
+  
+  # find maximum a posteriori
+  infer_lambda_a_rew[i] <- MPD(Y$lambda_a_rew)
+  infer_lambda_a_pun[i] <- MPD(Y$lambda_a_pun)
+  infer_lambda_K[i] <- MPD(Y$lambda_K)
+  infer_lambda_theta[i] <- MPD(Y$lambda_theta)
+  infer_lambda_omega_f[i] <- MPD(Y$lambda_omega_f)
+  infer_lambda_omega_p[i] <- MPD(Y$lambda_omega_p)
+  
+  print(i)
+  
+}
+
+end_time = Sys.time()
+end_time - start_time
+
+```
+
+```{r}
+recov_plot <- function(true, infer, plot_lab, plot_col) {
+  
+  # library(ggplot2)
+  
+  df <- data.frame(true, infer)
+  
+  pl <- ggplot(df, aes(x = true,
+                       y = infer,
+                       color = plot_col), color = "blue") + #Setting aesthetics for plot
+    geom_point(color = "darkolivegreen3") + #Giving points a color each
+    #scale_linetype(name="perfect recovery") +
+    geom_abline(intercept=0, slope=1, linetype=2) +
+    geom_smooth(method = "lm", se = T, formula = "y ~ x", color= "darkolivegreen" ) +
+    theme_minimal() + #Setting theme
+    xlab(plot_lab[1]) + #Setting x label
+    ylab(plot_lab[2]) + #Setting y label
+    labs(color = "") + #Setting legend title
+    ggtitle(paste0("'", plot_lab[2], "' compared to '", plot_lab[1], "'"))
+  
+  return(pl)
+  
+}
+```
+
+```{r}
+pl1 <- recov_plot(true_mu_a_rew, infer_mu_a_rew, c("true mu_a_rew", "infer mu_a_rew"), 'smoothed linear fit')
+pl2 <- recov_plot(true_mu_a_pun, infer_mu_a_pun, c("true mu_a_loss", "infer mu_a_loss"), 'smoothed linear fit')
+pl3 <- recov_plot(true_mu_K, infer_mu_K, c("true mu_K", "infer mu_K"), 'smoothed linear fit')
+pl4 <- recov_plot(true_mu_theta, infer_mu_theta, c("true mu_theta", "infer mu_theta"), 'smoothed linear fit')
+pl5 <- recov_plot(true_mu_omega_f, infer_mu_omega_f, c("true mu_omega_I", "infer mu_omega_I"), 'smoothed linear fit')
+pl6 <- recov_plot(true_mu_omega_p, infer_mu_omega_p, c("true mu_omega_IPS", "infer mu_omega_IPS"), 'smoothed linear fit')
+ggarrange(pl1, pl2, pl3, pl4, pl5, pl6)
+
+recov_sum <- as.data.frame(round(samples_hier_recovery$BUGSoutput$summary, 2))
+```
+

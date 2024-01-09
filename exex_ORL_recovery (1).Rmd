@@ -1,0 +1,238 @@
+---
+title: "exex_ORL_recovery"
+output: html_document
+date: '2023-12-29'
+---
+Loading packages
+```{r}
+install.packages("pacman")
+pacman::p_load(R2jags, parallel, ggpubr, extraDistr, truncnorm)
+
+pacman::p_load(ggplot, ggplot2, ggpubr)
+```
+
+Setting seed and practicalities 
+```{r}
+set.seed(1983)
+
+# defining a function for calculating the maximum of the posterior density (not exactly the same as the mode)
+MPD <- function(x) {
+  density(x)$x[which(density(x)$y==max(density(x)$y))]
+}
+```
+
+Task environment. In the exploration/exploitation task there are two trial types. There is a choice between a (1) lucrative and informative detrimental and non-informative, (2) detrimental and informative, lucrative and non-informative. And in each trial you have to choose between either in each trial. In run 1 trials where shifted at trial [19, 23, 21, 17] and run 2 [23, 19,17, 21]
+
+##Setting up payoff structure
+```{r}
+# Mimicking data from study, with 80 trials (2 times for each participant 160 trials total), 50% chance for information choice = lucrative choice
+ntrials <- 80  
+
+# Setting up empty array to be filled
+reward <- array(NA, dim = c(ntrials, 2))
+
+# Rewards for different probabilities
+probabilities <- list(
+  prob1 = rbinom(19, 1, 0.85),
+  prob2 = rbinom(23, 1, 0.85),
+  prob3 = rbinom(21, 1, 0.85),
+  prob4 = rbinom(17, 1, 0.85)
+)
+
+# Initialize the start row for appending
+start_row <- 1
+
+# Loop to fill the payoff array
+for (i in seq_along(probabilities)) {
+  L <- probabilities[[i]] + probabilities[[i]] - 1
+  R <- L * (-1)
+  
+  # Switch L and R for each new probability
+  if (i %% 2 == 0) {
+    temp <- L
+    L <- R
+    R <- temp
+  }
+  
+  # Determine the number of rows for the current probability
+  num_rows <- length(L)
+  
+  # Append values to the payoff array
+  reward[start_row:(start_row + num_rows - 1), ] <- cbind(L, R)
+  
+  # Update the start row for the next probability
+  start_row <- start_row + num_rows
+}
+
+```
+
+```{r}
+# Initialize an empty array
+info <- array(NA, dim = c(ntrials, 2))
+
+# Loop to fill the array
+for (i in 1:ntrials) {
+  # Allocate "x" or "y" with a 50% chance for each row
+  if (runif(1) <= 0.5) {
+    info[i, ] <- c(2, 1)
+  } else {
+    info[i, ] <- c(1, 2)
+  }
+}
+
+payoff <- reward*info
+#Setting info nr 1 as the info choice for deck 1 and then make the simulation always choose deck 1 
+#info[1,1] <- 2
+#info[1,2] <- 1
+
+#payoff <- cbind(reward, c(2), c(1)) # deck 1 and 2 reward and loss shapes with flips, deck 3 info, deck 4 no info
+```
+
+```{r}
+set.seed(2000)
+a_rew <- .3
+a_pun <- .1
+K <- 1
+theta <- 1
+omega_p <- .1
+omega_f <- .3 
+
+ntrials <- 80
+
+source("exex_ORL_simulations.R")
+ORL_sims <- ORL_sim(payoff,ntrials,a_rew,a_pun,K,theta,omega_p, omega_f)
+
+par(mfrow=c(3,2))
+plot(ORL_sims$Ev[,1])
+plot(ORL_sims$Ev[,2])
+plot(ORL_sims$I[,1])
+plot(ORL_sims$I[,2])
+plot(ORL_sims$X)
+plot(ORL_sims$PS[,1])
+plot(ORL_sims$PS[,2])
+plot(ORL_sims$p[,1])
+plot(ORL_sims$p[,2])
+
+par(mfrow=c(2,2))
+plot(abs(ORL_sims$Ev[,1]-ORL_sims$Ev[,2]))
+plot(ORL_sims$X)
+plot(ORL_sims$I[,1])
+plot(ORL_sims$I[,2])
+
+```
+
+
+```{r}
+x <- ORL_sims$x
+X <- ORL_sims$X
+
+# set up jags and run jags model
+data <- list("x","X","ntrials", "payoff") 
+params<-c("a_rew","a_pun","K","theta","omega_p")
+samples <- jags.parallel(data, inits=NULL, params,
+                model.file ="exex_ORL_agent.txt", n.chains=3, 
+                n.iter=5000, n.burnin=1000, n.thin=1, n.cluster=3)
+```
+
+
+```{r}
+###--------------Run full parameter recovery -------------
+niterations <- 100 # fewer because it takes too long
+
+true_a_rew <- array(NA,c(niterations))
+true_a_pun <- array(NA,c(niterations))
+true_K <- array(NA,c(niterations))
+true_theta <- array(NA,c(niterations))
+true_omega_f <- array(NA,c(niterations))
+true_omega_p <- array(NA,c(niterations))
+
+infer_a_rew <- array(NA,c(niterations))
+infer_a_pun <- array(NA,c(niterations))
+infer_K <- array(NA,c(niterations))
+infer_theta <- array(NA,c(niterations))
+infer_omega_f <- array(NA,c(niterations))
+infer_omega_p <- array(NA,c(niterations))
+
+start_time = Sys.time()
+
+for (i in 1:niterations) {
+  
+  # let's see how robust the model is. Does it recover all sorts of values?
+  a_rew <- runif(1,0,1)
+  a_pun <- runif(1,0,1)
+  K <- runif(1,0,2)
+  theta <- runif(1,.2,3) # could also just be a set value (e.g. 1) to simplify the model a bit
+  omega_f <- runif(1,0,1)
+  omega_p <- runif(1,-2,2)
+  
+  ORL_sims <- ORL_sim(payoff,ntrials,a_rew,a_pun,K,theta,omega_p, omega_f)
+  
+  x <- ORL_sims$x
+  X <- ORL_sims$X
+  
+  # set up jags and run jags model
+  data <- list("x","X","ntrials", "payoff") 
+  params<-c("a_rew","a_pun","K","theta","omega_p", "omega_f")
+  samples_recovery <- jags.parallel(data, inits=NULL, params,
+                  model.file ="exex_ORL_agent.txt", n.chains=3, 
+                  n.iter=3000, n.burnin=1000, n.thin=1, n.cluster=3)
+  
+  
+  true_a_rew[i] <- a_rew
+  true_a_pun[i] <- a_pun
+  true_K[i] <- K
+  #true_theta[i] <- theta
+  true_omega_f[i] <- omega_f
+  true_omega_p[i] <- omega_p
+  
+  # find maximum a posteriori
+  Y <- samples_recovery$BUGSoutput$sims.list
+  infer_a_rew[i] <- MPD(Y$a_rew)
+  infer_a_pun[i] <- MPD(Y$a_pun)
+  infer_K[i] <- MPD(Y$K)
+  #infer_theta[i] <- MPD(Y$theta)
+  infer_omega_f[i] <- MPD(Y$omega_f)
+  infer_omega_p[i] <- MPD(Y$omega_p)
+
+  print(i)
+  
+}
+
+end_time = Sys.time()
+end_time - start_time
+
+# let's look at some scatter plots
+
+par(mfrow=c(3,2))
+plot(true_a_rew,infer_a_rew)
+plot(true_a_pun,infer_a_pun)
+plot(true_K,infer_K)
+#plot(true_theta,infer_theta)
+plot(true_omega_f,infer_omega_f)
+plot(true_omega_p,infer_omega_p)
+
+# plotting code courtesy of Lasse
+source('recov_plot.R')
+pl1 <- recov_plot(true_a_rew, infer_a_rew, c("true a_rew", "infer a_rew"), 'smoothed linear fit')
+pl2 <- recov_plot(true_a_pun, infer_a_pun, c("true a_pun", "infer a_pun"), 'smoothed linear fit')
+pl3 <- recov_plot(true_K, infer_K, c("true K", "infer K"), 'smoothed linear fit')
+#pl4 <- recov_plot(true_theta, infer_theta, c("true theta", "infer theta"), 'smoothed linear fit')
+pl5 <- recov_plot(true_omega_f, infer_omega_f, c("true omega_f", "infer omega_f"), 'smoothed linear fit')
+pl6 <- recov_plot(true_omega_p, infer_omega_p, c("true omega_p", "infer omega_p"), 'smoothed linear fit')
+ggarrange(pl1, pl2, pl3, pl5, pl6)
+
+# for investigating multi-colinearity
+
+# par(mfrow=c(2,2))
+# plot(true_a_rew,true_a_pun)
+# plot(infer_a_rew,infer_a_pun)
+# plot(true_omega_f,true_omega_p)
+# plot(infer_omega_f,infer_omega_p)
+# 
+# par(mfrow=c(2,2))
+# plot(true_a_rew,true_omega_f)
+# plot(infer_a_rew,infer_omega_f)
+# plot(true_a_rew,true_omega_p)
+# plot(infer_a_rew,infer_omega_p)
+```
+

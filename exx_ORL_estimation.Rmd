@@ -1,0 +1,272 @@
+---
+title: "exex_ORL_estimation"
+output: html_document
+date: '2024-01-04'
+---
+```{r}
+install.packages("pacman")
+pacman::p_load(R2jags, parallel)
+
+set.seed(1983)
+
+# defining a function for calculating the maximum of the posterior density (not exactly the same as the mode)
+MPD <- function(x) {
+  density(x)$x[which(density(x)$y==max(density(x)$y))]
+}
+```
+
+```{r}
+#Loading payoff scheme and turning into array 
+payoff_scheme <- read.csv("exex_data/payoff1.csv")
+payoff_scheme <- payoff_scheme %>% na.omit()
+
+
+#----------prepare data for jags models - want trial x subject arrays for choice and gain & loss ----
+# identify and count unique subject IDs
+subIDs <- unique(payoff_scheme$subID2)
+nsubs <- length(subIDs)
+ntrials_max <- 80
+
+# all choices (x) and outcomes (X)
+deck1_raw <- payoff_scheme$deck1
+deck2_raw <- payoff_scheme$deck2 
+
+#--- assign choices and outcomes in trial x sub matrix
+
+#different number of trials across subjects. We'll need to fix this by padding arrays of < 100
+#this is just so we can make the array
+#then we'll also need to record number of valid trials for each sub, 
+#then run the JAGS model on only valid trials
+
+# empty arrays to fill
+ntrials_all <- array(0,c(nsubs))
+deck1_all <- array(0,c(nsubs,ntrials_max))
+deck2_all <- array(0,c(nsubs,ntrials_max))
+
+for (s in 1:nsubs) {
+  
+  #record n trials for subject s
+  ntrials_all[s] <- length(deck1_raw[payoff_scheme$subID2==subIDs[s]])
+  
+  #pad trials with NA if n trials < maximum (i.e. 100)
+  deck1_sub <- deck1_raw[payoff_scheme$subID2==subIDs[s]] 
+  length(deck1_sub) <- ntrials_max
+  
+  deck2_sub <- deck2_raw[payoff_scheme$subID2==subIDs[s]] 
+  length(deck2_sub) <- ntrials_max
+  
+  # assign arrays
+  deck1_all[s,] <- deck1_sub
+  deck2_all[s,] <- deck2_sub
+  
+}
+ndecks <- 2
+combined_array <- array(NA,c(nsubs,ntrials_max,ndecks))
+
+combined_array <- abind(deck1_all, deck2_all)
+combined_array <- aperm(combined_array, perm = c(80, 2, 48), use.NAs = "ifany")
+combined_array[,,1] <- deck1_all[1,]
+combined_array[,2,] <- deck1_all[2,]
+combined_array[,2,] <- deck2_all[1:48,1:80]
+
+# Permute the dimensions to get the desired shape [80, 2, 48]
+final_array <- aperm(combined_array, c(80, 2, 48))
+
+payoff_all <- array(c(deck1_all, deck2_all, nsubs), c(48,80,2))
+```
+
+
+```{r}
+#load control data
+exex_data <- read.csv("exex_data/data_estimation.csv",header=TRUE)
+exex_data <- exex_data %>% na.omit()
+
+#----------prepare data for jags models - want trial x subject arrays for choice and gain & loss ----
+# identify and count unique subject IDs
+subIDs <- unique(exex_data$subID2)
+nsubs <- length(subIDs)
+ntrials_max <- 80
+
+# all choices (x) and outcomes (X)
+x_raw <- exex_data$deck
+X_raw <- exex_data$gain 
+
+#--- assign choices and outcomes in trial x sub matrix
+
+#different number of trials across subjects. We'll need to fix this by padding arrays of < 100
+#this is just so we can make the array
+#then we'll also need to record number of valid trials for each sub, 
+#then run the JAGS model on only valid trials
+
+# empty arrays to fill
+ntrials_all <- array(0,c(nsubs))
+x_all <- array(0,c(nsubs,ntrials_max))
+X_all <- array(0,c(nsubs,ntrials_max))
+
+for (s in 1:nsubs) {
+  
+  #record n trials for subject s
+  ntrials_all[s] <- length(x_raw[exex_data$subID2==subIDs[s]])
+  
+  #pad trials with NA if n trials < maximum (i.e. 100)
+  x_sub <- x_raw[exex_data$subID2==subIDs[s]] 
+  length(x_sub) <- ntrials_max
+  
+  X_sub <- X_raw[exex_data$subID2==subIDs[s]] 
+  length(X_sub) <- ntrials_max
+  
+  # assign arrays
+  x_all[s,] <- x_sub
+  X_all[s,] <- X_sub
+  
+}
+```
+
+
+```{r}
+#----------testing our data curation by running JAGS on one subject
+
+# Now we'll fit one subject just to make sure everything works
+
+x <- x_all[22,]
+X <- X_all[22,]
+payoff1 <- payoff_all[22,,]
+ntrials <- ntrials_all[22]
+
+# set up jags and run jags model on one subject
+data <- list("x","X","ntrials", "payoff1") 
+params<-c("a_rew","a_pun","K","theta","omega_p", "omega_f")
+samples_estimation <- jags.parallel(data, inits=NULL, params,
+                model.file ="exex_ORL_agent.txt",
+                n.chains=3, n.iter=5000, n.burnin=1000, n.thin=1, n.cluster=3)
+
+
+# let's look at the posteriors for the parameters
+par(mfrow=c(3,2))
+plot(density(samples_estimation$BUGSoutput$sims.list$a_rew))
+plot(density(samples_estimation$BUGSoutput$sims.list$a_pun))
+#plot(density(samples_estimation$BUGSoutput$sims.list$theta))
+plot(density(samples_estimation$BUGSoutput$sims.list$K))
+plot(density(samples_estimation$BUGSoutput$sims.list$omega_f))
+plot(density(samples_estimation$BUGSoutput$sims.list$omega_p))
+
+# Question: how would you expect the data to look on the basis of these posteriors?
+```
+
+
+```{r}
+###########################################################
+#---------- run the hierarchical model on controls --------
+###########################################################
+
+x <- x_all
+X <- X_all
+payoff1 <- payoff_all
+
+ntrials <- ntrials_all
+
+# set up jags and run jags model
+data <- list("x","X","ntrials","nsubs", "payoff1") 
+# NB! we're not tracking theta cuz we're not modelling it in order reduce complexity a bit (hence, we're just setting it to 1 in "hier_ORL.txt")
+params<-c("mu_a_rew","mu_a_pun","mu_K","mu_theta","mu_omega_f","mu_omega_p") 
+
+start_time = Sys.time()
+samples_hier_estimation <- jags.parallel(data, inits=NULL, params,
+                         model.file ="exex_hier_ORL_agent.txt",
+                         n.chains=3, n.iter=5000, n.burnin=1000, n.thin=1, n.cluster=4)
+end_time = Sys.time()
+end_time - start_time
+
+par(mfrow=c(3,2))
+plot(density(samples_hier_estimation$BUGSoutput$sims.list$mu_a_rew))
+plot(density(samples_hier_estimation$BUGSoutput$sims.list$mu_a_pun))
+plot(density(samples_hier_estimation$BUGSoutput$sims.list$mu_K))
+#plot(density(samples_hier_estimation$BUGSoutput$sims.list$mu_theta))
+plot(density(samples_hier_estimation$BUGSoutput$sims.list$mu_omega_f))
+plot(density(samples_hier_estimation$BUGSoutput$sims.list$mu_omega_p))
+```
+
+```{r}
+est_sum <- as.data.frame(round(samples_hier_estimation$BUGSoutput$summary, 3))
+```
+
+
+```{r}
+#prior posterior plots 
+plot(density(rnorm(10000,0,1/sqrt(0.1))),ylim=c(0,10),main="a_rew")
+lines(density(samples_hier_estimation$BUGSoutput$sims.list$mu_a_rew),col="red")
+
+plot(density(rnorm(10000,0,1/sqrt(0.1))),ylim=c(0,10),main="a_rew")
+lines(density(samples_hier_estimation$BUGSoutput$sims.list$mu_a_pun),col="red")
+
+plot(density(rnorm(10000,0,1/sqrt(0.01))),ylim=c(0,2),main="a_rew")
+lines(density(samples_hier_estimation$BUGSoutput$sims.list$mu_omega_p),col="red")
+
+plot(density(rnorm(10000,0,1/sqrt(0.01))),ylim=c(0,3),main="a_rew")
+lines(density(samples_hier_estimation$BUGSoutput$sims.list$mu_omega_f),col="red")
+```
+
+```{r}
+plotting <- as.data.frame(samples_hier_estimation$BUGSoutput$sims.list)
+plottin2 <- as.data.frame(samples_hier_estimation$BUGSoutput$summary)
+
+est_plot1 <- plotting %>% ggplot(aes(mu_a_rew))+
+  geom_density(color= "darkolivegreen4") + 
+  xlab("mu_a_rew") + 
+  theme_minimal()+ 
+  geom_point(aes(x = 0.739, y = 0), color = "darkolivegreen3") + 
+  geom_point(aes(x = 0.998, y = 0), color = "darkolivegreen3") +
+  geom_segment(aes(x = 0.739, y = -1, xend = 0.739, yend = 1), linewidth = 0.5) +
+  geom_segment(aes(x = 0.998, y = -1, xend = 0.998, yend = 1), linewidth = 0.5)
+
+est_plot2 <- plotting %>% ggplot(aes(mu_a_pun))+
+  geom_density(color= "darkolivegreen4") + 
+  xlab("mu_a_loss") + 
+  theme_minimal()+ 
+  geom_point(aes(x = 0.364, y = 0), color = "darkolivegreen3") + 
+  geom_point(aes(x = 0.571, y = 0), color = "darkolivegreen3") +
+  geom_segment(aes(x = 0.364, y = -1, xend = 0.364, yend = 1), linewidth = 0.5) +
+  geom_segment(aes(x = 0.571, y = -1, xend = 0.571, yend = 1), linewidth = 0.5)
+
+est_plot3 <- plotting %>% ggplot(aes(mu_K))+
+  geom_density(color= "darkolivegreen4") + 
+  xlab("mu_K") + 
+  theme_minimal()+ 
+  geom_point(aes(x = 0.752, y = 0), color = "darkolivegreen3") + 
+  geom_point(aes(x = 1.834, y = 0), color = "darkolivegreen3") +
+  geom_segment(aes(x = 0.752, y = -0.5, xend = 0.752, yend = 0.5), linewidth = 0.5) +
+  geom_segment(aes(x = 1.834, y = -0.5, xend = 1.834, yend = 0.5), linewidth = 0.5)
+
+est_plot4 <- plotting %>% ggplot(aes(mu_omega_f))+
+  geom_density(color= "darkolivegreen4") + 
+  xlab("mu_omega_I") + 
+  theme_minimal()+ 
+  geom_point(aes(x = 0.956, y = 0), color = "darkolivegreen3") + 
+  geom_point(aes(x = 1.399, y = 0), color = "darkolivegreen3") +
+  geom_segment(aes(x = 0.956, y = -1, xend = 0.956, yend = 1), linewidth = 0.5) +
+  geom_segment(aes(x = 1.399, y = -1, xend = 1.399, yend = 1), linewidth = 0.5)
+
+est_plot5 <- plotting %>% ggplot(aes(mu_omega_p))+
+  geom_density(color= "darkolivegreen4") + 
+  xlab("mu_omega_IPS") + 
+  theme_minimal()+ 
+  geom_point(aes(x = -7.110, y = 0), color = "darkolivegreen3") + 
+  geom_point(aes(x = -3.798, y = 0), color = "darkolivegreen3") +
+  geom_segment(aes(x = -7.110, y = -0.25, xend = -7.110, yend = 0.25), linewidth = 0.5) +
+  geom_segment(aes(x = -3.798, y = -0.25, xend = -3.798, yend = 0.25), linewidth = 0.5)
+
+ggarrange(est_plot1, est_plot2, est_plot3, est_plot4, est_plot5)
+
+plottin2 %>% filter() %>% ggplot(plottin2, aes(mean, sd))+
+  #geom_density(aes(mu_omega_f)) + 
+  geom_point()
+```
+
+```{r}
+mcmcCoefPlot(samples_hier_estimation, hpdi = TRUE) + 
+  theme_minimal() + 
+  ggtitle("Coefficients from model estimation")
+
+mcmcObsProb(samples_hier_estimation)
+```
+

@@ -1,0 +1,76 @@
+model {
+
+  a_rew ~ dunif(0,1)
+  a_pun ~ dunif(0,1)
+  K  ~ dnorm(0,.1)T(0,)
+  theta <- 1 # dnorm(0,.1)T(0,)
+  omega_f ~ dnorm(0,.1)
+  omega_p ~ dnorm(0,.1)
+
+  #------ set t1 model variables --------------------------
+    
+  Ev[1,1] <- 0.5
+  Ev[1,2] <- 0.5
+    
+  PS[1,1] <- 0.5
+  PS[1,2] <- 0.5
+  
+  p[1,1] <- .5
+  p[1,2] <- .5
+
+
+  for (t in 2:ntrials) {
+      
+    for (d in 1:2) {
+        
+        # -------- Updating expected values ------------------------
+        #Updating when information given
+      Ev_updateinfo_cho[t,d] <- ifelse(X[t-1]>=0,
+                                       Ev[t-1,d] + a_rew*(((X[t-1])-1) - Ev[t-1,d]),
+                                       Ev[t-1,d] + a_pun*(((X[t-1])+1) - Ev[t-1,d]) 
+        )
+        
+      Ev_updateinfo[t,d] <- ifelse(d==x[t-1], Ev_updateinfo_cho[t,d], 1-Ev_updateinfo_cho[t,d])
+        
+      Ev[t,d] <- ifelse(abs(X[t-1])==2, Ev_updateinfo[t,d], Ev[t-1,d]) 
+        
+        #------------------------------------------------------------------
+        
+      #PS[t,d] <- ifelse(x[t-1]==d, # did you choose this deck or not on last trial
+      #                      ifelse(abs(X[t-1])==2, 1/(1+K), PS[t-1,d]/(1+K)), 
+      #                      ifelse(abs(X[t-1])==2, PS[t-1,d]/(1+K), 1/(1+K))) 
+       
+      #PS[t,d] <- ifelse(x[t-1]==d && abs(X[t-1])==2, 
+       #                 ifelse(X[t-1]>=0, PS[t-1,d]/(1+K), 1/(1+K)), 
+        #                ifelse(abs(X[t-1])==2, 1/(1+K), PS[t-1,d]/(1+K))) 
+                        
+      PS_prevcho[t,d] <- ifelse(abs(X[t-1])==2,# if you chose the deck on last round
+                                ifelse(X[t-1]>=0, PS[t-1,d]/(1+K), PS[t-1,d]), 
+                                PS[t-1,d])
+      
+      PS_prev_nocho[t,d] <- ifelse(abs(X[t-1])==2,
+                                   ifelse(X[t-1]>=0, 1/(1+K), PS[t-1,d]/(1+K)), 
+                                   PS[t-1,d])
+      
+      PS[t,d] <- ifelse(x[t-1]==d, PS_prevcho[t,d], PS_prev_nocho[t,d])
+      
+    }
+    
+    for (d in 1:2){
+    
+      I[t,d] <- ifelse(abs(payoff1[t,d])==2, ((1 - abs(Ev[t,1] - Ev[t,2]))/2), ((-1 - abs(Ev[t,1] - Ev[t,2]))/2)) 
+                        
+      V[t,d] <- 1 + Ev[t,d] + PS[t,d]*omega_p + I[t,d]*omega_f 
+        
+      exp_p[t,d] <- exp(theta*V[t,d])
+        
+    }
+      
+    for (d in 1:2) {
+        p[t,d] <- exp_p[t,d]/sum(exp_p[t,])
+      }
+      
+    x[t] ~ dcat(p[t,])
+      
+    }
+  }
