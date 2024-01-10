@@ -1,5 +1,5 @@
 # Decision Making Exam Fall 2023- Cognitive Science Msc
-This repository contains all code and data related to the exam paper: __Decision Making in ADHD: Fitting the ORL Model to a New Task and Data__.\
+This repository contains all code and data related to the exam paper: __Decision Making in ADHD: Fitting the ORL Model to a New Task and Data__
 
 ## Assignment description
 The purpose of this paper is to investigate decision making in relation to ADHD in an aim to elucidate cognitive processes underlying suboptimal or impaired decision making of individuals with ADHD. The ORL cognitive model (Haines et al. (2021)) of decision making on the iowa gambling task is modified to fit a two-armed exploration/exploitation task (Horvath et al. (2021)).
